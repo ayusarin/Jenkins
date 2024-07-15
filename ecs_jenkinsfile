@@ -1,0 +1,77 @@
+// Define the ECR repository URL based on the environment before the pipeline
+def ECR_REPO
+
+switch (env.ENVIRONMENT) {
+    case 'dev':
+        ECR_REPO = 'your-dev-repo'
+        break
+    case 'qa':
+        ECR_REPO = 'your-qa-repo'
+        break
+    case 'prod':
+        ECR_REPO = 'your-prod-repo'
+        break
+    default:
+        error "Unknown environment: ${env.ENVIRONMENT}"
+}
+
+pipeline {
+    agent any
+
+    environment {
+        AWS_REGION = 'your-aws-region'
+        CLUSTER_NAME = 'your-ecs-cluster-name'
+        SERVICE_NAME = 'your-ecs-service-name'
+        TASK_DEF_FILE = 'path/to/your/task-definition.json'
+        ENVIRONMENT = 'dev' // Example environment, this could be set based on your needs
+        ECR_REPO = ECR_REPO // Set the ECR_REPO environment variable
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                git branch: 'main', url: 'https://github.com/your-repo.git'
+            }
+        }
+
+        stage('Read Version from build.gradle') {
+            steps {
+                script {
+                    def buildGradle = readFile('build.gradle')
+                    def versionMatcher = (buildGradle =~ /version\s*=\s*['"]([^'"]+)['"]/)
+                    if (versionMatcher) {
+                        env.VERSION = versionMatcher[0][1]
+                        echo "Version: ${env.VERSION}"
+                    } else {
+                        error "Version not found in build.gradle"
+                    }
+                }
+            }
+        }
+
+        stage('Update Task Definition') {
+            steps {
+                script {
+                    def taskDef = readFile(env.TASK_DEF_FILE)
+                    def dockerImage = "${env.ECR_REPO}:${env.VERSION}"
+                    def updatedTaskDef = taskDef.replaceAll(/"image": "([^"]+)"/, "\"image\": \"${dockerImage}\"")
+                    writeFile file: env.TASK_DEF_FILE, text: updatedTaskDef
+                    echo "Updated task definition file: ${env.TASK_DEF_FILE}"
+                }
+            }
+        }
+
+        stage('Deploy to ECS') {
+            steps {
+                withAWS(region: env.AWS_REGION, credentials: 'your-aws-credentials-id') {
+                    script {
+                        sh """
+                        aws ecs register-task-definition --cli-input-json file://${env.TASK_DEF_FILE}
+                        aws ecs update-service --cluster ${env.CLUSTER_NAME} --service ${env.SERVICE_NAME} --force-new-deployment
+                        """
+                    }
+                }
+            }
+        }
+    }
+}
